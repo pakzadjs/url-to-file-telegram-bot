@@ -15,10 +15,9 @@ import (
 )
 
 const (
-	MAX_TELEGRAM_FILE_SIZE = 2000 * 1024 * 1024 // 2000MB in bytes
+	MAX_TELEGRAM_FILE_SIZE = 50 * 1024 * 1024
 )
 
-// ProgressReader wraps an io.Reader to track progress
 type ProgressReader struct {
 	io.Reader
 	total      int64
@@ -37,7 +36,6 @@ func (pr *ProgressReader) Read(p []byte) (int, error) {
 }
 
 func main() {
-	// Load .env file
 	if err := godotenv.Load(); err != nil {
 		log.Fatal("Error loading .env file")
 	}
@@ -70,15 +68,17 @@ func main() {
 				// Process URL in the same group where command was received
 				go handleURL(bot, update.Message, url)
 			} else {
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "❌ Please provide a URL after the /url command")
-				bot.Send(msg)
+				sendErrorMessage(bot, update.Message.Chat.ID, "❌ No URL was given. Please provide a URL after the /url command.")
 			}
+		} else if strings.HasPrefix(update.Message.Text, "http://") || strings.HasPrefix(update.Message.Text, "https://") {
+			sendErrorMessage(bot, update.Message.Chat.ID, "❌ Please use the /url command followed by the link.")
+		} else if strings.TrimSpace(update.Message.Text) == "/url" {
+			sendErrorMessage(bot, update.Message.Chat.ID, "❌ No URL was given. Please provide a URL after the /url command.")
 		}
 	}
 }
 
 func handleURL(bot *tgbotapi.BotAPI, message *tgbotapi.Message, url string) {
-	// Send initial status message
 	statusMsg := tgbotapi.NewMessage(message.Chat.ID, "⏳ Starting download...")
 	status, err := bot.Send(statusMsg)
 	if err != nil {
@@ -86,26 +86,23 @@ func handleURL(bot *tgbotapi.BotAPI, message *tgbotapi.Message, url string) {
 		return
 	}
 
-	// Get file info before downloading
 	resp, err := http.Head(url)
 	if err != nil {
-		updateMessage(bot, message.Chat.ID, status.MessageID, "❌ Failed to get file info")
+		sendErrorMessage(bot, message.Chat.ID, "❌ Failed to get file info")
 		return
 	}
 	fileSize := resp.ContentLength
 
-	// Check file size before downloading
-	// if fileSize > MAX_TELEGRAM_FILE_SIZE {
-	// 	sizeMB := float64(fileSize) / 1024 / 1024
-	// 	errorMsg := fmt.Sprintf("❌ File is too large (%.1f MB). Telegram bot limit is 50 MB.\n\nPlease use a direct download link instead.", sizeMB)
-	// 	updateMessage(bot, message.Chat.ID, status.MessageID, errorMsg)
-	// 	return
-	// }
+	if fileSize > MAX_TELEGRAM_FILE_SIZE {
+		sizeMB := float64(fileSize) / 1024 / 1024
+		errorMsg := fmt.Sprintf("❌ File is too large (%.1f MB). Telegram bot limit is 50 MB.\n\nPlease use a direct download link instead.", sizeMB)
+		sendErrorMessage(bot, message.Chat.ID, errorMsg)
+		return
+	}
 
-	// Start actual download
 	resp, err = http.Get(url)
 	if err != nil {
-		updateMessage(bot, message.Chat.ID, status.MessageID, "❌ Failed to download the file")
+		sendErrorMessage(bot, message.Chat.ID, "❌ Failed to download the file")
 		return
 	}
 	defer resp.Body.Close()
@@ -117,7 +114,7 @@ func handleURL(bot *tgbotapi.BotAPI, message *tgbotapi.Message, url string) {
 
 	tempFile, err := os.CreateTemp("", "telegram-*-"+fileName)
 	if err != nil {
-		updateMessage(bot, message.Chat.ID, status.MessageID, "❌ Failed to create temporary file")
+		sendErrorMessage(bot, message.Chat.ID, "❌ Failed to create temporary file")
 		return
 	}
 	defer os.Remove(tempFile.Name())
@@ -139,28 +136,23 @@ func handleURL(bot *tgbotapi.BotAPI, message *tgbotapi.Message, url string) {
 
 	_, err = io.Copy(tempFile, progressReader)
 	if err != nil {
-		updateMessage(bot, message.Chat.ID, status.MessageID, "❌ Failed to save the file")
+		sendErrorMessage(bot, message.Chat.ID, "❌ Failed to save the file")
 		return
 	}
 
-	// Update status before upload
 	updateMessage(bot, message.Chat.ID, status.MessageID, "📤 Uploading to Telegram...")
 
-	// Rewind file for reading
 	tempFile.Seek(0, 0)
 
-	// Create the file upload - sending to the same group where command was received
 	doc := tgbotapi.NewDocument(message.Chat.ID, tgbotapi.FilePath(tempFile.Name()))
 	doc.ReplyToMessageID = message.MessageID
 
-	// Send the file
 	_, err = bot.Send(doc)
 	if err != nil {
-		updateMessage(bot, message.Chat.ID, status.MessageID, "❌ Failed to send the file")
+		sendErrorMessage(bot, message.Chat.ID, "❌ Failed to send the file")
 		return
 	}
 
-	// Final success message
 	updateMessage(bot, message.Chat.ID, status.MessageID, "✅ File sent successfully!")
 }
 
